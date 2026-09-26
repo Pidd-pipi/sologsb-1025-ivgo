@@ -23,9 +23,9 @@
       </div>
       <div class="strip-metrics">
         <div><strong>{{ draft.languages.length }}</strong><span>语言版本</span></div>
-        <div><strong>{{ draft.channels.length }}</strong><span>发布渠道</span></div>
-        <div><strong class="danger-text">{{ blockingChecks.length }}</strong><span>阻断问题</span></div>
-        <div><strong class="warning-text">{{ warningCount }}</strong><span>待确认提醒</span></div>
+        <div><strong>{{ draft.channels.length }}</strong><span>已选渠道</span></div>
+        <div><strong class="ok-text">{{ readyChannelCount }}/{{ draft.channels.length }}</strong><span>渠道包就绪</span></div>
+        <div><strong class="danger-text">{{ blockingChecks.length }}</strong><span>整篇阻断</span></div>
       </div>
     </section>
 
@@ -135,8 +135,13 @@
           <nb-card-header><div><span class="section-kicker">发布门禁</span><h3>检查摘要</h3></div><span class="count-pill danger">{{ blockingChecks.length }}</span></nb-card-header>
           <nb-card-body>
             <div class="check-overview" (click)="activeView = 'checks'">
-              <div><strong>必填与语言</strong><span>{{ checks.length }} 项结果</span></div>
-              <div><strong>阻断问题</strong><span class="danger-text">{{ blockingChecks.length }} 项</span></div>
+              <div><strong>渠道发布包</strong><span class="ok-text">{{ readyChannelCount }}/{{ draft.channels.length }} 就绪</span></div>
+              <div class="channel-mini" *ngFor="let pkg of channelPackages">
+                <span [class.dot-ok]="pkg.ready" [class.dot-bad]="!pkg.ready"></span>
+                <span>{{ pkg.channel }}</span>
+                <b [class.ok-text]="pkg.ready" [class.danger-text]="!pkg.ready">{{ pkg.ready ? '可发布' : pkg.issues.length + ' 项缺失' }}</b>
+              </div>
+              <div><strong>整篇阻断</strong><span class="danger-text">{{ blockingChecks.length }} 项</span></div>
               <div><strong>未解决讨论</strong><span>{{ unresolvedDiscussionCount }} 条</span></div>
             </div>
             <button nbButton fullWidth status="basic" (click)="activeView = 'checks'">查看完整检查</button>
@@ -157,11 +162,106 @@
 
     <section *ngIf="activeView === 'checks'" class="view-section">
       <div class="section-heading">
-        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项需要人工确认并承担责任。</p></div>
-        <button nbButton status="danger" size="large" (click)="lockVersion()" [disabled]="isLocked">检查通过后锁定最终版本</button>
+        <div>
+          <span class="eyebrow">发布门禁</span>
+          <h2>渠道发布包检查与发送</h2>
+          <p>每个渠道按自己的格式单独成包、单独判定：一路不合格只挡该渠道，其他渠道照常准备。整篇错误仍会阻断锁定。</p>
+        </div>
+        <button nbButton status="danger" size="large" (click)="lockVersion()"
+          [disabled]="isLocked || sendingCount > 0 || blockingChecks.length > 0 || readyChannelCount === 0">
+          {{ readyChannelCount > 0 ? '锁定合格渠道（' + readyChannelCount + '/' + draft.channels.length + '）' : '暂无可锁定渠道' }}
+        </button>
       </div>
+
+      <nb-alert status="success" *ngIf="isLocked && lockedVersion" class="lock-alert">
+        <div>
+          <strong>版本 {{ lockedVersion.version }} 已锁定（{{ formatDateTime(lockedVersion.createdAt) }}）</strong>
+          <p>以下发送均取自该版本锁定快照，草稿继续修改不会改变发送内容；失败渠道可直接重试。需改内容请发起紧急修订生成新版本。</p>
+        </div>
+      </nb-alert>
+
+      <div class="package-grid">
+        <article *ngFor="let pkg of channelPackages" class="package-card" [class.ready]="isLocked ? !!getRecord(lockedVersion!, pkg.channel) : pkg.ready" [class.blocked]="isLocked ? !getRecord(lockedVersion!, pkg.channel) : !pkg.ready">
+          <header>
+            <div>
+              <span class="package-icon">{{ pkg.channel === '短信' ? '信' : pkg.channel === '广播' ? '播' : pkg.channel === '社区大屏' ? '屏' : '发' }}</span>
+              <div>
+                <h3>{{ pkg.channel }}</h3>
+                <p>{{ channelRuleHint(pkg.channel) }}</p>
+              </div>
+            </div>
+            <ng-container *ngIf="!isLocked">
+              <span class="package-badge" [class.ok]="pkg.ready" [class.bad]="!pkg.ready">{{ pkg.ready ? '可发布' : pkg.issues.length + ' 项缺失' }}</span>
+            </ng-container>
+            <ng-container *ngIf="isLocked">
+              <span class="package-badge" [class.ok]="getRecord(lockedVersion!, pkg.channel)" [class.bad]="!getRecord(lockedVersion!, pkg.channel)">
+                {{ getRecord(lockedVersion!, pkg.channel) ? '已入发送台' : '未冻结入包' }}
+              </span>
+            </ng-container>
+          </header>
+
+          <!-- 锁定前：该渠道缺什么 -->
+          <div *ngIf="!isLocked" class="package-body">
+            <ul class="issue-list" *ngIf="pkg.issues.length">
+              <li *ngFor="let issue of pkg.issues">
+                <span class="issue-dot bad"></span>
+                <span>{{ issue.text }}</span>
+                <button *ngIf="issue.localeId" nbButton size="tiny" status="basic" (click)="jumpToLocale(issue.localeId)">定位语言</button>
+              </li>
+            </ul>
+            <div class="issue-list ok" *ngIf="!pkg.issues.length">
+              <span class="issue-dot ok"></span><span>本渠道必需语言与格式全部满足，可随版本锁定进入发送台。</span>
+            </div>
+            <div class="payload-preview">
+              <div class="preview-head"><span>必需语言</span><span>标题</span><span>正文</span><span>句数</span><span>链接</span></div>
+              <div class="preview-row" *ngFor="let item of pkg.previews" [class.missing]="item.titleLength === 0 && item.bodyLength === 0">
+                <span>{{ item.name }}</span>
+                <span [class.bad-text]="item.titleLength === 0">{{ item.titleLength }} 字</span>
+                <span [class.bad-text]="item.bodyLength === 0">{{ item.bodyLength }} 字</span>
+                <span>{{ item.sentenceCount }}</span>
+                <span [class.ok-text]="item.hasLink" [class.bad-text]="!item.hasLink">{{ item.hasLink ? '有' : '无' }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 锁定后：发送台（仅入包渠道），记录来自锁定版本，重试使用同一快照 -->
+          <div *ngIf="isLocked && getRecord(lockedVersion!, pkg.channel) as record" class="package-body">
+            <div class="send-status-row">
+              <span class="send-badge" [class]="record.status">{{ sendStatusLabel(record.status) }}</span>
+              <span>第 {{ record.attempts }} 次尝试 · 覆盖 {{ record.recipientCount | number }} {{ pkg.channel === '短信' ? '人' : pkg.channel === '广播' ? '个基站' : pkg.channel === '社区大屏' ? '块屏' : '个触点' }}</span>
+            </div>
+            <p class="send-detail">{{ record.detail }}</p>
+            <dl class="send-meta">
+              <dt>内容快照</dt><dd>{{ record.snapshotVersion }}（锁定不可变）</dd>
+              <dt>最近尝试</dt><dd>{{ record.lastAttemptAt ? formatDateTime(record.lastAttemptAt) : '尚未发送' }}</dd>
+              <dt>发送成功</dt><dd>{{ record.sentAt ? formatDateTime(record.sentAt) : '—' }}</dd>
+            </dl>
+            <div class="send-actions">
+              <button nbButton status="primary" size="small" *ngIf="record.status === 'pending' || record.status === 'failed'"
+                (click)="sendChannel(pkg.channel)">
+                {{ record.status === 'failed' ? '按锁定快照重试' : '按锁定快照发送' }}
+              </button>
+              <button nbButton status="basic" size="small" disabled *ngIf="record.status === 'sending'">发送中…</button>
+              <span class="sent-locked" *ngIf="record.status === 'sent'">已发送记录已归档，不可覆盖</span>
+            </div>
+          </div>
+
+          <!-- 锁定后：锁定时未入包的渠道保持冻结 -->
+          <div *ngIf="isLocked && !getRecord(lockedVersion!, pkg.channel)" class="package-body">
+            <ul class="issue-list">
+              <li *ngFor="let issue of frozenIssues(pkg.channel)">
+                <span class="issue-dot bad"></span><span>{{ issue }}</span>
+              </li>
+            </ul>
+            <p class="frozen-note">该渠道在 {{ lockedVersion!.version }} 锁定时未通过，已随快照冻结，不能在本版本补发；修改后请从该版本发起紧急修订。</p>
+            <button nbButton status="warning" size="small" (click)="startEmergencyRevision()">从 {{ lockedVersion!.version }} 发起紧急修订</button>
+          </div>
+        </article>
+      </div>
+
       <div class="check-layout">
         <div class="check-list">
+          <h3 class="list-heading">整篇检查（影响所有渠道）</h3>
           <article *ngFor="let check of checks; let i = index" class="check-card" [class.error]="check.level === 'error'" [class.warning]="check.level === 'warning'" [class.info]="check.level === 'info'">
             <div class="check-index">{{ i + 1 }}</div>
             <div class="check-copy">
@@ -170,17 +270,17 @@
             </div>
             <button nbButton size="small" status="basic" (click)="showCheck(check)">定位</button>
           </article>
-          <div *ngIf="!checks.length" class="all-clear"><strong>全部检查已通过</strong><p>可以进入角色确认并锁定最终版本。</p></div>
+          <div *ngIf="!checks.length" class="all-clear"><strong>整篇检查已通过</strong><p>渠道差异请看上方各渠道发布包；合格渠道可随版本锁定。</p></div>
         </div>
         <aside>
           <nb-card class="panel score-card">
             <nb-card-body>
-              <span class="section-kicker">检查结果</span>
-              <strong>{{ checks.length === 0 ? 100 : (checks.length - blockingChecks.length) / checks.length * 100 | number:'1.0-0' }}</strong>
-              <p>发布准备度</p>
-              <div class="score-row"><span>阻断</span><b class="danger-text">{{ blockingChecks.length }}</b></div>
-              <div class="score-row"><span>警告</span><b class="warning-text">{{ warningCount }}</b></div>
-              <div class="score-row"><span>总检查</span><b>{{ checks.length }}</b></div>
+              <span class="section-kicker">渠道准备度</span>
+              <strong>{{ readyChannelCount }}/{{ draft.channels.length || 0 }}</strong>
+              <p>合格渠道发布包</p>
+              <div class="score-row"><span>整篇阻断</span><b class="danger-text">{{ blockingChecks.length }}</b></div>
+              <div class="score-row"><span>渠道包问题</span><b class="warning-text">{{ packageIssueCount }}</b></div>
+              <div class="score-row"><span>警告提醒</span><b class="warning-text">{{ warningCount }}</b></div>
             </nb-card-body>
           </nb-card>
           <nb-alert status="info" *ngIf="draft.status === 'in-review'">当前稿处于审阅状态。锁定后如需修改，必须发起紧急修订。</nb-alert>
@@ -241,7 +341,10 @@
       <div class="section-heading">
         <div><span class="eyebrow">版本控制</span><h2>冻结、比较与紧急修订</h2><p>最终锁定版本不可覆盖；紧急修订会从当前版本继续，并保留完整历史。</p></div>
         <div class="version-actions">
-          <button nbButton status="danger" (click)="lockVersion()" [disabled]="isLocked">锁定当前版本</button>
+          <button nbButton status="danger" (click)="lockVersion()"
+            [disabled]="isLocked || sendingCount > 0 || blockingChecks.length > 0 || readyChannelCount === 0">
+            锁定合格渠道（{{ readyChannelCount }}/{{ draft.channels.length }}）
+          </button>
           <button nbButton status="warning" (click)="startEmergencyRevision()" [disabled]="!isLocked">发起紧急修订</button>
         </div>
       </div>
@@ -252,7 +355,16 @@
             <nb-card-body class="timeline">
               <article *ngFor="let version of draft.versions; let last = last" [class.current]="last">
                 <span></span>
-                <div><b>{{ version.version }}</b><strong>{{ version.label }}</strong><p>{{ formatDateTime(version.createdAt) }} · {{ version.channels.length }} 个渠道</p><small *ngIf="version.emergency">紧急修订</small></div>
+                <div>
+                  <b>{{ version.version }}</b><strong>{{ version.label }}</strong>
+                  <p>{{ formatDateTime(version.createdAt) }} · {{ version.channels.length }} 个渠道</p>
+                  <div class="timeline-channels">
+                    <span *ngFor="let pkg of version.channelPackages" [class]="getRecord(version, pkg.channel)?.status ?? (pkg.ready ? 'pending' : 'blocked')">
+                      {{ pkg.channel }} · {{ getRecord(version, pkg.channel) ? sendStatusLabel(getRecord(version, pkg.channel)!.status) : pkg.ready ? '待发送' : '未入包' }}
+                    </span>
+                  </div>
+                  <small *ngIf="version.emergency">紧急修订</small>
+                </div>
               </article>
             </nb-card-body>
           </nb-card>
@@ -283,7 +395,23 @@
             <nb-card-header><div><span class="section-kicker">发布记录</span><h3>版本摘要</h3></div></nb-card-header>
             <nb-card-body class="version-summary">
               <article *ngFor="let version of draft.versions">
-                <div><span>{{ version.version }}</span><h3>{{ version.title }}</h3><p>{{ version.note }}</p></div>
+                <div><span>{{ version.version }}</span><h3>{{ version.title }}</h3><p>{{ version.note }}</p>
+                  <ul class="record-list">
+                    <li *ngFor="let pkg of version.channelPackages">
+                      <span class="record-dot" [class]="getRecord(version, pkg.channel)?.status ?? (pkg.ready ? 'pending' : 'blocked')"></span>
+                      <ng-container *ngIf="getRecord(version, pkg.channel) as record">
+                        <strong>{{ pkg.channel }}</strong>
+                        <em>{{ sendStatusLabel(record.status) }} · {{ record.attempts }} 次尝试</em>
+                        <small>快照 {{ record.snapshotVersion }}<ng-container *ngIf="record.sentAt"> · {{ formatDateTime(record.sentAt) }}</ng-container></small>
+                      </ng-container>
+                      <ng-container *ngIf="!getRecord(version, pkg.channel)">
+                        <strong>{{ pkg.channel }}</strong>
+                        <em>锁定时不合格、未入发送包</em>
+                      </ng-container>
+                    </li>
+                    <li *ngIf="!version.channelPackages.length" class="muted">该历史版本未记录渠道包。</li>
+                  </ul>
+                </div>
                 <dl><dt>严重程度</dt><dd>{{ version.severity }}</dd><dt>失效</dt><dd>{{ formatDateTime(version.expiresAt) }}</dd></dl>
               </article>
             </nb-card-body>

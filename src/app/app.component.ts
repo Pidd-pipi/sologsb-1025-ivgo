@@ -65,6 +65,50 @@ interface VersionSnapshot {
   languages: LanguageVersion[];
   note: string;
   emergency: boolean;
+  channelPackages: FrozenChannelPackage[];
+  sendRecords: ChannelSendRecord[];
+}
+
+type SendStatus = 'pending' | 'sending' | 'sent' | 'failed';
+
+interface ChannelPackageIssue {
+  id: string;
+  localeId?: string;
+  text: string;
+}
+
+interface ChannelPayloadPreview {
+  localeId: string;
+  name: string;
+  titleLength: number;
+  bodyLength: number;
+  sentenceCount: number;
+  hasLink: boolean;
+}
+
+interface ChannelPackage {
+  channel: string;
+  ready: boolean;
+  issues: ChannelPackageIssue[];
+  previews: ChannelPayloadPreview[];
+}
+
+interface FrozenChannelPackage {
+  channel: string;
+  ready: boolean;
+  issues: string[];
+}
+
+interface ChannelSendRecord {
+  id: string;
+  channel: string;
+  status: SendStatus;
+  attempts: number;
+  recipientCount: number;
+  lastAttemptAt?: string;
+  sentAt?: string;
+  detail: string;
+  snapshotVersion: string;
 }
 
 interface NoticeDraft {
@@ -85,6 +129,7 @@ interface NoticeDraft {
   status: NoticeStatus;
   version: string;
   lockedAt?: string;
+  basedOnVersionId?: string;
   emergencyRevision: boolean;
   updatedAt: string;
 }
@@ -138,6 +183,28 @@ function initialDraft(): NoticeDraft {
     channels: ['短信', '广播', '社区大屏'],
     note: '发布范围覆盖滨海新区。',
     emergency: false,
+    channelPackages: [
+      { channel: '短信', ready: true, issues: [] },
+      { channel: '广播', ready: true, issues: [] },
+      { channel: '社区大屏', ready: true, issues: [] }
+    ],
+    sendRecords: [
+      {
+        id: 'record-100-sms', channel: '短信', status: 'sent', attempts: 1, recipientCount: 28640,
+        lastAttemptAt: '2026-09-23T08:12:00+08:00', sentAt: '2026-09-23T08:12:00+08:00',
+        detail: '短信网关回执成功，使用 1.0.0 锁定快照。', snapshotVersion: '1.0.0'
+      },
+      {
+        id: 'record-100-broadcast', channel: '广播', status: 'sent', attempts: 1, recipientCount: 41,
+        lastAttemptAt: '2026-09-23T08:13:00+08:00', sentAt: '2026-09-23T08:13:00+08:00',
+        detail: '应急广播播送一次，使用 1.0.0 锁定快照。', snapshotVersion: '1.0.0'
+      },
+      {
+        id: 'record-100-screen', channel: '社区大屏', status: 'sent', attempts: 1, recipientCount: 126,
+        lastAttemptAt: '2026-09-23T08:15:00+08:00', sentAt: '2026-09-23T08:15:00+08:00',
+        detail: '社区大屏已上屏，使用 1.0.0 锁定快照。', snapshotVersion: '1.0.0'
+      }
+    ],
     languages: [
       {
         id: 'zh-CN', locale: 'zh-CN', name: '简体中文', title: '台风“海燕”橙色预警通知',
@@ -161,6 +228,23 @@ function initialDraft(): NoticeDraft {
     title: '台风“海燕”橙色预警及人员转移通知',
     scope: '滨海新区全区，重点为沿海街道',
     note: '增加沿海街道转移要求。',
+    sendRecords: [
+      {
+        id: 'record-110-sms', channel: '短信', status: 'sent', attempts: 2, recipientCount: 96420,
+        lastAttemptAt: '2026-09-24T10:41:00+08:00', sentAt: '2026-09-24T10:41:00+08:00',
+        detail: '首次发送网关超时，按 1.1.0 锁定快照重试后成功，原失败记录保留。', snapshotVersion: '1.1.0'
+      },
+      {
+        id: 'record-110-broadcast', channel: '广播', status: 'failed', attempts: 1, recipientCount: 63,
+        lastAttemptAt: '2026-09-24T10:42:00+08:00',
+        detail: '广播基站链路中断；可继续使用 1.1.0 锁定快照重试。', snapshotVersion: '1.1.0'
+      },
+      {
+        id: 'record-110-screen', channel: '社区大屏', status: 'sent', attempts: 1, recipientCount: 214,
+        lastAttemptAt: '2026-09-24T10:44:00+08:00', sentAt: '2026-09-24T10:44:00+08:00',
+        detail: '社区大屏已上屏，使用 1.1.0 锁定快照。', snapshotVersion: '1.1.0'
+      }
+    ],
     languages: [
       {
         ...clone(first.languages[0]),
@@ -184,9 +268,9 @@ function initialDraft(): NoticeDraft {
     severity: '橙色',
     scope: '滨海新区全区，重点为沿海街道',
     channels: ['短信', '广播', '社区大屏', '政务新媒体'],
-    eventAt: '2026-09-25T07:30',
-    effectiveAt: '2026-09-25T09:00',
-    expiresAt: '2026-09-26T08:00',
+    eventAt: '2026-09-27T07:30',
+    effectiveAt: '2026-09-27T09:00',
+    expiresAt: '2026-09-28T08:00',
     requiredLocales: ['zh-CN', 'en', 'ja'],
     languages: [
       {
@@ -382,21 +466,7 @@ export class AppComponent implements OnInit {
       id: 'channels', category: '发布渠道', level: 'error', title: '未选择目标渠道', detail: '至少选择一个目标发布渠道。'
     });
 
-    this.draft.requiredLocales.forEach((locale) => {
-      if (!this.draft.languages.some((language) => language.id === locale)) {
-        const name = this.locales.find((item) => item.id === locale)?.name ?? locale;
-        checks.push({
-          id: `missing-${locale}`, category: '语言完整性', level: 'error', title: `${name}版本缺失`,
-          detail: '该语言属于本次发布的必需语言，请添加并完成翻译。'
-        });
-      }
-    });
-
     this.draft.languages.forEach((language) => {
-      if (!language.title.trim() || !language.body.trim()) checks.push({
-        id: `required-${language.id}`, category: '必填信息', level: 'error', title: `${language.name}内容不完整`,
-        detail: '语言版本必须包含标题和正文。'
-      });
       if (!language.reviewed) checks.push({
         id: `review-${language.id}`, category: '版本审阅', level: language.id === 'ja' ? 'warning' : 'info',
         title: `${language.name}尚未完成语言复核`, detail: '发布前应确认措辞、术语和本地化表达。'
@@ -443,6 +513,161 @@ export class AppComponent implements OnInit {
     return this.checks.filter((check) => check.level === 'warning').length;
   }
 
+  // 渠道发布包：短信按字数/链接、广播按严重程度/生效时间、社区大屏按标题长度/句数分别检查。
+  // 一路不合格只阻断该渠道，其余渠道照常生成可发布包。
+  readonly smsBodyLimits: Record<string, number> = { 'zh-CN': 70, ja: 70, ko: 70 };
+  readonly smsDefaultLimit = 160;
+  readonly screenTitleLimits: Record<string, number> = { 'zh-CN': 20, ja: 24, ko: 24 };
+  readonly screenDefaultTitleLimit = 42;
+  readonly screenSentenceMin = 2;
+  readonly screenSentenceMax = 4;
+  readonly broadcastAllowedSeverities = ['橙色', '红色'];
+
+  get channelPackages(): ChannelPackage[] {
+    return this.draft.channels.map((channel) => this.buildChannelPackage(channel));
+  }
+
+  get readyChannelCount(): number {
+    return this.channelPackages.filter((item) => item.ready).length;
+  }
+
+  get packageIssueCount(): number {
+    return this.channelPackages.reduce((total, item) => total + item.issues.length, 0);
+  }
+
+  get lockedVersion(): VersionSnapshot | undefined {
+    return this.draft.versions.find((version) => version.id === this.draft.basedOnVersionId)
+      ?? (this.isLocked ? this.draft.versions.at(-1) : undefined);
+  }
+
+  channelRuleHint(channel: string): string {
+    if (channel === '短信') return '检查每个必需语言正文是否在短信字数内，并包含可访问链接';
+    if (channel === '广播') return '核对严重程度是否允许广播播送、生效时间是否有效';
+    if (channel === '社区大屏') return '检查每个必需语言标题长度与正句句数是否适合上屏';
+    return '检查每个必需语言的标题与正文是否齐备';
+  }
+
+  private buildChannelPackage(channel: string): ChannelPackage {
+    const issues: ChannelPackageIssue[] = [];
+    this.draft.requiredLocales.forEach((localeId) => {
+      const language = this.draft.languages.find((item) => item.id === localeId);
+      const name = this.locales.find((item) => item.id === localeId)?.name ?? localeId;
+      if (!language) {
+        issues.push({
+          id: `pkg-${channel}-missing-${localeId}`, localeId,
+          text: `${name}版本缺失：该语言为必需语言，无法生成${channel}内容`
+        });
+        return;
+      }
+      if (!language.title.trim()) {
+        issues.push({
+          id: `pkg-${channel}-title-${localeId}`, localeId,
+          text: `${name}标题为空`
+        });
+      }
+      if (!language.body.trim()) {
+        issues.push({
+          id: `pkg-${channel}-body-${localeId}`, localeId,
+          text: `${name}正文为空`
+        });
+      }
+    });
+    if (channel === '短信') this.checkSmsPackage(issues);
+    if (channel === '广播') this.checkBroadcastPackage(issues);
+    if (channel === '社区大屏') this.checkScreenPackage(issues);
+    const previews: ChannelPayloadPreview[] = this.draft.requiredLocales.map((localeId) => {
+      const language = this.draft.languages.find((item) => item.id === localeId);
+      return {
+        localeId,
+        name: language?.name ?? this.locales.find((item) => item.id === localeId)?.name ?? localeId,
+        titleLength: this.displayLength(language?.title ?? ''),
+        bodyLength: this.displayLength(language?.body ?? ''),
+        sentenceCount: language ? this.splitSentences(language.body).length : 0,
+        hasLink: language ? this.hasHttpLink(language.body) : false
+      };
+    });
+    return { channel, ready: issues.length === 0, issues, previews };
+  }
+
+  private checkSmsPackage(issues: ChannelPackageIssue[]): void {
+    this.draft.requiredLocales.forEach((localeId) => {
+      const language = this.draft.languages.find((item) => item.id === localeId);
+      if (!language || !language.body.trim()) return;
+      const limit = this.smsBodyLimits[localeId] ?? this.smsDefaultLimit;
+      const length = this.displayLength(language.body);
+      if (length > limit) {
+        issues.push({
+          id: `pkg-sms-length-${localeId}`, localeId,
+          text: `${language.name}正文 ${length} 字，超出单条短信上限 ${limit} 字（${language.id === 'zh-CN' || language.id === 'ja' || language.id === 'ko' ? '按中/日/韩文短信计长' : '按拉丁字母短信计长'}），需精简或拆分`
+        });
+      }
+      if (!this.hasHttpLink(language.body)) {
+        issues.push({
+          id: `pkg-sms-link-${localeId}`, localeId,
+          text: `${language.name}正文缺少链接：短信需附 https:// 详情链接，便于居民查看全文`
+        });
+      }
+    });
+  }
+
+  private checkBroadcastPackage(issues: ChannelPackageIssue[]): void {
+    if (!this.broadcastAllowedSeverities.includes(this.draft.severity)) {
+      issues.push({
+        id: 'pkg-broadcast-severity',
+        text: `严重程度为“${this.draft.severity}”，应急广播仅允许在${this.broadcastAllowedSeverities.join('、')}预警时播送`
+      });
+    }
+    const effectiveAt = this.toTime(this.draft.effectiveAt);
+    if (!effectiveAt) {
+      issues.push({ id: 'pkg-broadcast-effective-empty', text: '生效时间未填写，无法安排广播播送窗口' });
+    } else if (effectiveAt <= Date.now()) {
+      issues.push({
+        id: 'pkg-broadcast-effective-past',
+        text: `生效时间 ${this.formatDateTime(this.draft.effectiveAt)} 已过，广播内容将失去时效，请发起紧急修订更新时间`
+      });
+    }
+  }
+
+  private checkScreenPackage(issues: ChannelPackageIssue[]): void {
+    this.draft.requiredLocales.forEach((localeId) => {
+      const language = this.draft.languages.find((item) => item.id === localeId);
+      if (!language) return;
+      const titleLimit = this.screenTitleLimits[localeId] ?? this.screenDefaultTitleLimit;
+      const titleLength = this.displayLength(language.title);
+      if (language.title.trim() && titleLength > titleLimit) {
+        issues.push({
+          id: `pkg-screen-title-${localeId}`, localeId,
+          text: `${language.name}标题 ${titleLength} 字，超出大屏标题上限 ${titleLimit} 字`
+        });
+      }
+      if (language.body.trim()) {
+        const count = this.splitSentences(language.body).length;
+        if (count < this.screenSentenceMin || count > this.screenSentenceMax) {
+          issues.push({
+            id: `pkg-screen-sentences-${localeId}`, localeId,
+            text: `${language.name}正文 ${count} 句，大屏建议控制在 ${this.screenSentenceMin}-${this.screenSentenceMax} 句以便滚动阅读`
+          });
+        }
+      }
+    });
+  }
+
+  private displayLength(text: string): number {
+    return Array.from(text.trim()).length;
+  }
+
+  private hasHttpLink(text: string): boolean {
+    return /https?:\/\/[^\s。！？.!?]+/i.test(text);
+  }
+
+  getRecord(version: VersionSnapshot | undefined, channel: string): ChannelSendRecord | undefined {
+    return version?.sendRecords?.find((record) => record.channel === channel);
+  }
+
+  frozenIssues(channel: string): string[] {
+    return this.lockedVersion?.channelPackages.find((item) => item.channel === channel)?.issues ?? [];
+  }
+
   get isLocked(): boolean {
     return this.draft.status === 'locked';
   }
@@ -460,7 +685,8 @@ export class AppComponent implements OnInit {
   }
 
   get nextVersion(): string {
-    const numbers = this.draft.version.match(/\d+/g)?.map(Number) ?? [1, 2, 0];
+    const base = this.draft.emergencyRevision ? this.draft.version.replace('-emergency', '') : this.draft.version;
+    const numbers = base.match(/\d+/g)?.map(Number) ?? [1, 0, 0];
     return `${numbers[0] || 1}.${(numbers[1] || 0) + 1}.0`;
   }
 
@@ -566,38 +792,126 @@ export class AppComponent implements OnInit {
 
   lockVersion(): void {
     if (this.blockingChecks.length) {
-      this.toastr.warning(`仍有 ${this.blockingChecks.length} 项阻断问题，不能锁定。`, '发布检查未通过');
+      this.toastr.warning(`仍有 ${this.blockingChecks.length} 项整篇阻断问题，不能锁定。`, '发布检查未通过');
       this.activeView = 'checks';
       return;
     }
+    if (!this.draft.channels.length) {
+      this.toastr.warning('请至少选择一个目标渠道。', '没有可发布渠道');
+      this.activeView = 'checks';
+      return;
+    }
+    const packages = this.channelPackages;
+    const readyChannels = packages.filter((item) => item.ready);
+    if (!readyChannels.length) {
+      this.toastr.warning('每个渠道包都不合格，请先按渠道提示补齐内容。', '没有可发布渠道');
+      this.activeView = 'checks';
+      return;
+    }
+    const blockedChannels = packages.filter((item) => !item.ready).map((item) => item.channel);
     const snapshot: VersionSnapshot = {
-      id: uid('version'), label: '最终锁定版本', createdAt: new Date().toISOString(), version: this.nextVersion,
+      id: uid('version'),
+      label: this.draft.emergencyRevision ? '紧急修订锁定版本' : '最终锁定版本',
+      createdAt: new Date().toISOString(), version: this.nextVersion,
       title: this.draft.title, severity: this.draft.severity, scope: this.draft.scope, eventAt: this.draft.eventAt,
       effectiveAt: this.draft.effectiveAt, expiresAt: this.draft.expiresAt, channels: [...this.draft.channels],
-      languages: clone(this.draft.languages), note: '发布前检查通过并锁定。', emergency: false
+      languages: clone(this.draft.languages),
+      note: blockedChannels.length
+        ? `发布检查通过；${blockedChannels.join('、')}渠道包不合格已冻结，其余渠道可发送。`
+        : '发布检查通过并锁定。',
+      emergency: this.draft.emergencyRevision,
+      channelPackages: packages.map((item) => ({
+        channel: item.channel, ready: item.ready, issues: item.issues.map((issue) => issue.text)
+      })),
+      sendRecords: readyChannels.map((item) => this.createPendingRecord(item.channel, this.nextVersion))
     };
     this.commit((draft) => {
       draft.versions.push(snapshot);
       draft.version = snapshot.version;
       draft.status = 'locked';
       draft.lockedAt = snapshot.createdAt;
+      draft.basedOnVersionId = snapshot.id;
+      draft.emergencyRevision = false;
     });
     this.compareBaseId = this.draft.versions.at(-2)?.id ?? '';
     this.compareTargetId = this.draft.versions.at(-1)?.id ?? '';
-    this.toastr.success(`版本 ${snapshot.version} 已锁定。`, '最终版本已冻结');
+    if (blockedChannels.length) {
+      this.toastr.warning(`版本 ${snapshot.version} 已锁定；${blockedChannels.join('、')}被挡下，其余渠道可发送。`, '部分渠道已冻结');
+    } else {
+      this.toastr.success(`版本 ${snapshot.version} 已锁定，全部渠道可发送。`, '最终版本已冻结');
+    }
+  }
+
+  get sendingCount(): number {
+    return this.lockedVersion?.sendRecords?.filter((record) => record.status === 'sending').length ?? 0;
+  }
+
+  sendChannel(channel: string): void {
+    const version = this.lockedVersion;
+    if (!version) return;
+    const record = version.sendRecords?.find((item) => item.channel === channel);
+    if (!record || record.status === 'sent' || record.status === 'sending') return;
+    record.status = 'sending';
+    record.attempts += 1;
+    record.lastAttemptAt = new Date().toISOString();
+    record.snapshotVersion = version.version;
+    record.detail = `正在按 ${version.version} 锁定快照发送，草稿后续修改不会影响本次内容。`;
+    this.persist();
+    // 模拟渠道网关：约三分之二概率成功；失败后可基于同一锁定快照重试。
+    window.setTimeout(() => {
+      const current = this.lockedVersion?.sendRecords?.find((item) => item.channel === channel);
+      if (!current || current.status !== 'sending') return;
+      const success = Math.random() > 0.34;
+      current.status = success ? 'sent' : 'failed';
+      current.lastAttemptAt = new Date().toISOString();
+      if (success) {
+        current.sentAt = current.lastAttemptAt;
+        current.detail = `渠道回执成功：内容取自 ${version.version} 锁定快照，第 ${current.attempts} 次发送。`;
+        this.toastr.success(`${channel} 已发送（${version.version} 锁定快照）。`, '发送成功');
+      } else {
+        current.detail = `渠道网关超时/回执失败：仍可重试，重试继续使用 ${version.version} 锁定快照。`;
+        this.toastr.danger(`${channel} 发送失败，可直接重试。`, '发送失败');
+      }
+      this.persist();
+    }, 900);
+  }
+
+  sendStatusLabel(status: SendStatus): string {
+    return status === 'sent' ? '已发送' : status === 'sending' ? '发送中' : status === 'failed' ? '发送失败' : '待发送';
+  }
+
+  jumpToLocale(localeId?: string): void {
+    if (localeId && this.draft.languages.some((language) => language.id === localeId)) {
+      this.selectedLanguageId = localeId;
+    }
+    this.activeView = 'compose';
   }
 
   startEmergencyRevision(): void {
-    const baseVersion = this.draft.version.split('-')[0];
-    const [major = 1, minor = 0] = baseVersion.split('.').map(Number);
+    const base = this.lockedVersion;
+    if (!base) return;
+    const numbers = base.version.match(/\d+/g)?.map(Number) ?? [1, 0, 0];
+    const emergencyVersion = `${numbers[0] || 1}.${(numbers[1] || 0) + 1}.0-emergency`;
     this.commit((draft) => {
+      // 紧急修订必须从锁定版本发起：复制锁定快照内容，已锁定版本及其发送记录原样保留。
+      draft.title = base.title;
+      draft.severity = base.severity;
+      draft.scope = base.scope;
+      draft.eventAt = base.eventAt;
+      draft.effectiveAt = base.effectiveAt;
+      draft.expiresAt = base.expiresAt;
+      draft.channels = [...base.channels];
+      draft.requiredLocales = Array.from(new Set(base.languages.map((language) => language.id)));
+      draft.languages = clone(base.languages);
       draft.status = 'draft';
       draft.emergencyRevision = true;
-      draft.version = `${major}.${minor + 1}.0-emergency`;
+      draft.version = emergencyVersion;
+      draft.basedOnVersionId = base.id;
       draft.lockedAt = undefined;
+      draft.reviews = draft.reviews.map((review) => ({ ...review, status: 'pending', note: '' }));
     });
     this.activeView = 'compose';
-    this.toastr.warning('已创建紧急修订稿；锁定版本仍完整保留。', '进入紧急修订');
+    this.toastr.warning(`已基于 ${base.version} 锁定稿创建紧急修订；原版本与发送记录不会被覆盖。`, '进入紧急修订');
   }
 
   showCheck(check: CheckResult): void {
@@ -648,6 +962,17 @@ export class AppComponent implements OnInit {
     return item.id;
   }
 
+  private createPendingRecord(channel: string, snapshotVersion: string): ChannelSendRecord {
+    const recipients: Record<string, number> = {
+      '短信': 96420, '广播': 63, '社区大屏': 214, '政务新媒体': 152000, '应急喇叭': 87, '网站': 1
+    };
+    return {
+      id: uid('record'), channel, status: 'pending', attempts: 0,
+      recipientCount: recipients[channel] ?? 0,
+      detail: '等待发送；发送时使用本版本锁定快照。', snapshotVersion
+    };
+  }
+
   private commit(mutator: (draft: NoticeDraft) => void): void {
     this.history.push(clone(this.draft));
     if (this.history.length > 50) this.history.shift();
@@ -669,6 +994,20 @@ export class AppComponent implements OnInit {
     value.discussions ??= [];
     value.reviews ??= [];
     value.requiredLocales ??= ['zh-CN'];
+    value.channels ??= [];
+    value.versions.forEach((version) => {
+      version.channelPackages ??= version.channels.map((channel) => ({
+        channel, ready: true, issues: [] as string[]
+      }));
+      version.sendRecords ??= [];
+      // 刷新中断时“发送中”记录无法收到回执，落盘为失败以便重试（记录本身保留）。
+      version.sendRecords.forEach((record) => {
+        if (record.status === 'sending') {
+          record.status = 'failed';
+          record.detail = '上次发送中断未收到回执，可使用同一锁定快照重试。';
+        }
+      });
+    });
     return value;
   }
 
