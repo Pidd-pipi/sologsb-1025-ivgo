@@ -34,13 +34,13 @@
         <span>01</span><strong>通知编写</strong><small>事件要素与多语言正文</small>
       </button>
       <button [class.active]="activeView === 'checks'" (click)="activeView = 'checks'">
-        <span>02</span><strong>发布前检查</strong><small>必填、术语、时间与版本</small>
+        <span>02</span><strong>发布前检查</strong><small>必填、术语与渠道发布包</small>
       </button>
       <button [class.active]="activeView === 'review'" (click)="activeView = 'review'">
         <span>03</span><strong>角色审阅</strong><small>逐句讨论与责任确认</small>
       </button>
       <button [class.active]="activeView === 'versions'" (click)="activeView = 'versions'">
-        <span>04</span><strong>锁定与比较</strong><small>冻结、紧急修订、差异</small>
+        <span>04</span><strong>锁定与发送</strong><small>冻结、渠道发送、差异</small>
       </button>
     </nav>
 
@@ -58,6 +58,7 @@
             <span class="status-pill" [class.locked]="isLocked">{{ isLocked ? '已锁定' : '草稿中' }}</span>
           </nb-card-header>
           <nb-card-body>
+            <nb-alert status="warning" *ngIf="isLocked" class="locked-alert">版本已锁定，内容不可直接修改。请从「锁定与发送」发起紧急修订；已发送的渠道记录不会被覆盖。</nb-alert>
             <div class="form-grid">
               <label class="field span-2"><span>通知标题 *</span><input nbInput fullWidth [disabled]="isLocked" [ngModel]="draft.title" (ngModelChange)="updateMeta('title', $event)"></label>
               <label class="field"><span>事件类型 *</span>
@@ -149,7 +150,7 @@
             <div class="done"><span>1</span><p><strong>内容起草</strong>自动保存到本机</p></div>
             <div [class.done]="blockingChecks.length === 0"><span>2</span><p><strong>发布检查</strong>必须清除阻断项</p></div>
             <div [class.done]="allReviewsApproved"><span>3</span><p><strong>角色确认</strong>编辑、法务、翻译、发布人</p></div>
-            <div [class.done]="isLocked"><span>4</span><p><strong>冻结发布</strong>生成不可变快照</p></div>
+            <div [class.done]="isLocked"><span>4</span><p><strong>冻结发送</strong>快照锁定后按渠道发送</p></div>
           </nb-card-body>
         </nb-card>
       </aside>
@@ -157,8 +158,11 @@
 
     <section *ngIf="activeView === 'checks'" class="view-section">
       <div class="section-heading">
-        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>错误项会阻止版本锁定；警告项需要人工确认并承担责任。</p></div>
-        <button nbButton status="danger" size="large" (click)="lockVersion()" [disabled]="isLocked">检查通过后锁定最终版本</button>
+        <div><span class="eyebrow">发布门禁</span><h2>逐项检查通知是否可发布</h2><p>整篇必填问题会阻止锁定；渠道发布包问题只挡下对应渠道，其余渠道照常准备。</p></div>
+        <div class="lock-actions">
+          <button nbButton status="danger" size="large" (click)="lockVersion()" [disabled]="isLocked">锁定版本并准备 {{ readyChannelCount }}/{{ channelPackages.length }} 个渠道</button>
+          <small *ngIf="heldChannelCount">「{{ heldChannelNames }}」未通过，仅挡下这些渠道。</small>
+        </div>
       </div>
       <div class="check-layout">
         <div class="check-list">
@@ -181,10 +185,33 @@
               <div class="score-row"><span>阻断</span><b class="danger-text">{{ blockingChecks.length }}</b></div>
               <div class="score-row"><span>警告</span><b class="warning-text">{{ warningCount }}</b></div>
               <div class="score-row"><span>总检查</span><b>{{ checks.length }}</b></div>
+              <div class="score-row"><span>就绪渠道</span><b class="ok-text">{{ readyChannelCount }}</b></div>
+              <div class="score-row"><span>被挡渠道</span><b class="danger-text">{{ heldChannelCount }}</b></div>
             </nb-card-body>
           </nb-card>
           <nb-alert status="info" *ngIf="draft.status === 'in-review'">当前稿处于审阅状态。锁定后如需修改，必须发起紧急修订。</nb-alert>
         </aside>
+      </div>
+      <div class="packages-block">
+        <div class="packages-heading">
+          <div><span class="eyebrow">渠道发布包</span><h2>按渠道分别核对，分别放行</h2><p>每个渠道单独列出缺项：短信核对各必需语言的正文长度与链接，广播核对严重程度与生效时间，社区大屏核对标题长度与句数。一路不合格只挡该渠道，其他渠道照常准备。</p></div>
+        </div>
+        <div class="channel-grid" *ngIf="channelPackages.length; else noChannelPackages">
+          <article *ngFor="let pkg of channelPackages" class="channel-card" [class.ready]="pkg.ready" [class.held]="!pkg.ready">
+            <header>
+              <strong>{{ pkg.channel }}</strong>
+              <span class="channel-badge" [class.ok]="pkg.ready">{{ pkg.ready ? '就绪' : '缺 ' + pkg.errorCount + ' 项' }}</span>
+            </header>
+            <ul>
+              <li *ngFor="let item of pkg.checks" [class]="item.level">
+                <b>{{ item.level === 'error' ? '缺' : item.level === 'warning' ? '确认' : '提示' }}</b>
+                <div><strong>{{ item.title }}</strong><p>{{ item.detail }}</p></div>
+              </li>
+            </ul>
+            <p class="channel-verdict">{{ pkg.ready ? '该渠道已就绪，锁定后进入待发送。' : '该渠道将被挡下，其余渠道照常准备。' }}</p>
+          </article>
+        </div>
+        <ng-template #noChannelPackages><p class="empty-copy">请先在「通知编写」选择目标渠道，系统会为每个渠道生成发布包检查。</p></ng-template>
       </div>
     </section>
 
@@ -239,7 +266,7 @@
 
     <section *ngIf="activeView === 'versions'" class="view-section">
       <div class="section-heading">
-        <div><span class="eyebrow">版本控制</span><h2>冻结、比较与紧急修订</h2><p>最终锁定版本不可覆盖；紧急修订会从当前版本继续，并保留完整历史。</p></div>
+        <div><span class="eyebrow">版本控制</span><h2>冻结、发送与紧急修订</h2><p>最终锁定版本不可覆盖；锁定后按渠道记录发送状态，失败用锁定快照重试；后续修改须从该版本发起紧急修订，已发送记录不能覆盖。</p></div>
         <div class="version-actions">
           <button nbButton status="danger" (click)="lockVersion()" [disabled]="isLocked">锁定当前版本</button>
           <button nbButton status="warning" (click)="startEmergencyRevision()" [disabled]="!isLocked">发起紧急修订</button>
@@ -258,6 +285,48 @@
           </nb-card>
         </aside>
         <div class="main-column">
+          <nb-card class="panel">
+            <nb-card-header>
+              <div><span class="section-kicker">渠道发送</span><h3>按锁定快照发送 · 记录只增不改</h3></div>
+              <span class="count-pill">{{ draft.sendRecords.length }} 条记录</span>
+            </nb-card-header>
+            <nb-card-body>
+              <div *ngIf="releaseSnapshots.length; else noReleaseSnapshot">
+                <div *ngFor="let snapshot of releaseSnapshots" class="release-group">
+                  <header>
+                    <strong>{{ snapshot.version }}</strong>
+                    <span>{{ snapshot.label }}</span>
+                    <em *ngIf="snapshot.id === currentLockedId">当前锁定</em>
+                    <time>{{ formatDateTime(snapshot.createdAt) }}</time>
+                  </header>
+                  <article *ngFor="let release of snapshot.releases" class="send-row" [class.held]="release.status === 'held'">
+                    <div class="send-channel">
+                      <strong>{{ release.channel }}</strong>
+                      <span class="send-state" [class]="channelState(snapshot, release.channel)">{{ stateLabel(channelState(snapshot, release.channel)) }}</span>
+                    </div>
+                    <p>{{ sendRowSummary(snapshot, release) }}</p>
+                    <div class="send-actions">
+                      <button *ngIf="canAttempt(snapshot, release.channel)" nbButton size="tiny" [status]="channelState(snapshot, release.channel) === 'failed' ? 'warning' : 'primary'" (click)="attemptSend(snapshot, release.channel)">
+                        {{ channelState(snapshot, release.channel) === 'failed' ? '重试' : '发送' }}
+                      </button>
+                    </div>
+                  </article>
+                </div>
+              </div>
+              <ng-template #noReleaseSnapshot><p class="empty-copy">锁定版本后，这里会按渠道生成发送任务；发送与重试都使用锁定快照，与后续草稿修改互不影响。</p></ng-template>
+              <div class="send-log" *ngIf="draft.sendRecords.length">
+                <h4>发送记录 · 只增不改</h4>
+                <article *ngFor="let record of sendLog">
+                  <span class="log-status" [class]="record.status">{{ record.status === 'success' ? '成功' : '失败' }}</span>
+                  <div>
+                    <strong>{{ record.channel }} · {{ record.version }} · 第 {{ record.attempt }} 次尝试</strong>
+                    <p>{{ record.operator }} · {{ formatDateTime(record.createdAt) }}</p>
+                    <small>{{ record.detail }}</small>
+                  </div>
+                </article>
+              </div>
+            </nb-card-body>
+          </nb-card>
           <nb-card class="panel">
             <nb-card-header class="diff-header">
               <div><span class="section-kicker">文本比较</span><h3>两版正文差异</h3></div>
